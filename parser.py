@@ -7,7 +7,7 @@ import sqlite3
 import requests
 
 # Настройки
-API_KEY = os.environ.get('STEAM_API_KEY')  # Ключ будет браться из секретов GitHub
+API_KEY = os.environ.get('STEAM_API_KEY')
 DB_PATH = "mods_cache.db"
 APP_ID = 221100  # DayZ
 MAX_RETRIES = 3
@@ -40,10 +40,8 @@ def save_mods_to_db(mods_data):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Очищаем старые данные
     cursor.execute('DELETE FROM mods')
     
-    # Вставляем новые данные
     for mod in mods_data:
         try:
             cursor.execute('''
@@ -59,7 +57,6 @@ def save_mods_to_db(mods_data):
                 1 if mod.get('banned', False) else 0
             ))
         except Exception as e:
-            print(f"Ошибка сохранения мода {mod.get('title', 'unknown')}: {e}")
             continue
     
     conn.commit()
@@ -74,32 +71,25 @@ def make_request_with_retry(url, params, retries=MAX_RETRIES):
             
             if response.status_code != 200:
                 print(f"Ошибка HTTP: {response.status_code}. Попытка {attempt + 1}/{retries}")
-                if attempt < retries - 1:
-                    time.sleep(2)
-                    continue
-                return None
+                time.sleep(2)
+                continue
             
             if not response.text or response.text.strip() == '':
-                print(f"Пустой ответ от API. Попытка {attempt + 1}/{retries}")
-                if attempt < retries - 1:
-                    time.sleep(2)
-                    continue
-                return None
+                time.sleep(2)
+                continue
             
             return response.json()
             
         except Exception as e:
-            print(f"Ошибка запроса на попытке {attempt + 1}/{retries}: {e}")
-            if attempt < retries - 1:
-                time.sleep(2)
-                continue
-            return None
+            print(f"Ошибка запроса: {e}")
+            time.sleep(2)
+            continue
     return None
 
 def fetch_all_mods():
     """Получение всех модов из Steam API"""
     if not API_KEY:
-        print("ОШИБКА: API ключ не найден! Убедитесь, что переменная STEAM_API_KEY задана.")
+        print("ОШИБКА: API ключ не найден!")
         return
 
     all_fetched_mods = []
@@ -108,38 +98,31 @@ def fetch_all_mods():
     loaded = 0
     url = "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/"
     
-    params = {
-        'key': API_KEY,
-        'query_type': 0,
-        'cursor': cursor,
-        'numperpage': 100,
-        'appid': APP_ID,
-        'return_short_description': 'true'
-    }
+    print("Начинаем загрузку модов со Steam API...")
     
-    print("Отправка первого запроса к Steam API...")
-    data = make_request_with_retry(url, params)
-    
-    if not data or 'response' not in data:
-        print("Критическая ошибка: Не удалось получить ответ от Steam API.")
-        return
+    while cursor:
+        params = {
+            'key': API_KEY,
+            'query_type': 0,
+            'cursor': cursor,
+            'numperpage': 100,
+            'appid': APP_ID,
+            'return_short_description': 'true'
+        }
         
-    response_data = data['response']
-    total = response_data.get('total', 0)
-    print(f"Всего модов найдено в Steam: {total}")
-    
-    while cursor and cursor != '*':
-        # Задержка, чтобы не спамить API (чуть больше, чем в UI, так как спешить некуда)
-        time.sleep(0.5)
-        
-        params['cursor'] = cursor
         data = make_request_with_retry(url, params)
         
         if not data or 'response' not in data:
-            print("Ошибка получения страницы, прерываем цикл...")
+            print("Ошибка получения данных, прерываем загрузку...")
             break
             
         response_data = data['response']
+        
+        # Получаем общее количество только при первом запросе
+        if cursor == '*':
+            total = response_data.get('total', 0)
+            print(f"Всего модов найдено в Steam: {total}")
+            
         publishedfiledetails = response_data.get('publishedfiledetails', [])
         
         for mod in publishedfiledetails:
@@ -158,13 +141,17 @@ def fetch_all_mods():
                 pass
                 
         loaded += len(publishedfiledetails)
-        print(f"Загружено: {loaded}/{total} ({(loaded/total)*100:.1f}%)")
+        if total > 0:
+            print(f"Загружено: {loaded}/{total} ({(loaded/total)*100:.1f}%)")
         
         next_cursor = response_data.get('next_cursor')
+        
+        # Если Steam больше не отдает курсор или он совпадает с текущим - мы скачали всё
         if not next_cursor or next_cursor == cursor:
             break
             
         cursor = next_cursor
+        time.sleep(0.5)  # Задержка между запросами
 
     if all_fetched_mods:
         save_mods_to_db(all_fetched_mods)
