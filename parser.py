@@ -51,29 +51,31 @@ def get_last_update_time():
         return 0
 
 def save_mods_to_db(mods_data):
-    """Сохранение новых и обновленных модов (БЕЗ удаления старых)"""
-    if not mods_data:
-        return
-        
+    """Сохранение новых и обновленных модов и удаление мусора"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    for mod in mods_data:
-        try:
-            cursor.execute('''
-                INSERT OR REPLACE INTO mods (publishedfileid, title, subscriptions, file_size, time_created, time_updated, banned)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                str(mod.get('publishedfileid', '')),
-                str(mod.get('title', '')),
-                int(mod.get('subscriptions', 0)),
-                int(mod.get('file_size', 0)),
-                int(mod.get('time_created', 0)),
-                int(mod.get('time_updated', 0)),
-                1 if mod.get('banned', False) else 0
-            ))
-        except Exception:
-            continue
+    if mods_data:
+        for mod in mods_data:
+            try:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO mods (publishedfileid, title, subscriptions, file_size, time_created, time_updated, banned)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    str(mod.get('publishedfileid', '')),
+                    str(mod.get('title', '')),
+                    int(mod.get('subscriptions', 0)),
+                    int(mod.get('file_size', 0)),
+                    int(mod.get('time_created', 0)),
+                    int(mod.get('time_updated', 0)),
+                    1 if mod.get('banned', False) else 0
+                ))
+            except Exception:
+                continue
+
+    # Жесткая зачистка: удаляем все моды с нулевыми датами или без названия,
+    # которые могли застрять в базе при прошлых парсингах
+    cursor.execute("DELETE FROM mods WHERE time_created = 0 OR time_updated = 0 OR title = 'Unknown' OR title = ''")
     
     conn.commit()
     conn.close()
@@ -102,7 +104,7 @@ def make_request_with_retry(url, params, retries=MAX_RETRIES):
     return None
 
 def fetch_all_mods():
-    """Получение модов из Steam API (Инкрементально + Полная чистка раз в неделю)"""
+    """Получение модов из Steam API"""
     if not API_KEY:
         print("ОШИБКА: API ключ не найден!")
         return
@@ -161,22 +163,26 @@ def fetch_all_mods():
         for mod in publishedfiledetails:
             try:
                 time_updated = int(mod.get('time_updated', 0))
+                time_created = int(mod.get('time_created', 0))
+                title = str(mod.get('title', '')).strip()
                 
+                # ПРОПУСКАЕМ удаленные/скрытые моды (без дат и названий)
+                if time_created == 0 or time_updated == 0 or not title or title == 'Unknown':
+                    continue
+
                 if time_updated >= target_time:
                     all_older_than_target = False
                 
                 processed_mod = {
                     'publishedfileid': str(mod.get('publishedfileid', '')),
-                    'title': str(mod.get('title', 'Unknown')),
+                    'title': title,
                     'subscriptions': int(mod.get('subscriptions', 0)) if mod.get('subscriptions') else 0,
                     'file_size': int(mod.get('file_size', 0)) if mod.get('file_size') else 0,
-                    'time_created': int(mod.get('time_created', 0)) if mod.get('time_created') else 0,
+                    'time_created': time_created,
                     'time_updated': time_updated,
                     'banned': bool(mod.get('banned', False))
                 }
                 
-                # Добавляем в список на сохранение только если это полная загрузка, 
-                # либо если мод реально обновился (свежее local_max_time)
                 if is_full_update or local_max_time == 0 or time_updated > local_max_time:
                     all_fetched_mods.append(processed_mod)
                     
@@ -195,8 +201,11 @@ def fetch_all_mods():
         cursor = next_cursor
         time.sleep(0.1)
 
+    # Мы вызываем save_mods_to_db даже если all_fetched_mods пустой, 
+    # чтобы отработал запрос DELETE для очистки уже существующих багов
+    save_mods_to_db(all_fetched_mods)
+
     if all_fetched_mods:
-        save_mods_to_db(all_fetched_mods)
         if is_full_update:
             print(f"✅ Полная чистка и парсинг завершены! В чистую базу загружено {len(all_fetched_mods)} модов.")
         elif local_max_time == 0:
