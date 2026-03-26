@@ -9,14 +9,14 @@ jobs:
   update-db:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Разрешаем боту сохранять файлы в репозиторий
+      contents: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Обновили до v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Обновили до v5
         with:
           python-version: '3.10'
 
@@ -33,6 +33,5 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add mods_cache.db
-          # Сохраняем только если файл реально изменился
           git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update mods_cache.db"
           git push
