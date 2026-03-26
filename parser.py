@@ -138,7 +138,7 @@ def fetch_all_mods():
     while cursor:
         params = {
             'key': API_KEY,
-            'query_type': 19,
+            'query_type': 21,
             'cursor': cursor,
             'numperpage': 100,
             'appid': APP_ID,
