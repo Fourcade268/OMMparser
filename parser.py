@@ -55,7 +55,6 @@ def save_mods_to_db(mods_data):
     if not mods_data:
         return
         
-    print(f"Сохранение/обновление {len(mods_data)} модов в БД...")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -78,7 +77,6 @@ def save_mods_to_db(mods_data):
     
     conn.commit()
     conn.close()
-    print("Сохранение успешно завершено.")
 
 def make_request_with_retry(url, params, retries=MAX_RETRIES):
     """Выполнение запроса с повторными попытками при ошибках"""
@@ -109,24 +107,19 @@ def fetch_all_mods():
         print("ОШИБКА: API ключ не найден!")
         return
 
-    # Берем текущее время по UTC (как на серверах GitHub)
     now = datetime.datetime.utcnow()
-    
-    # Полное обновление ТОЛЬКО в воскресенье (6) И ТОЛЬКО в первый час ночи (0)
     is_full_update = (now.weekday() == 6 and now.hour == 0)
 
     if is_full_update:
         print("Воскресенье, 00:00 UTC! Выполняем ПОЛНУЮ чистку базы для удаления 'мертвых' модов...")
         local_max_time = 0
         target_time = 0
-        # Жестко очищаем старую базу, чтобы удалить удаленные из Steam моды
         conn = sqlite3.connect(DB_PATH)
         conn.cursor().execute('DELETE FROM mods')
         conn.commit()
         conn.close()
     else:
         local_max_time = get_last_update_time()
-        # Буфер 3 дня (259200 секунд) на случай кэширования на серверах Steam
         target_time = local_max_time - 259200 if local_max_time > 0 else 0
         
         if local_max_time > 0:
@@ -143,7 +136,7 @@ def fetch_all_mods():
     while cursor:
         params = {
             'key': API_KEY,
-            'query_type': 19, # 19 = Сортировка по дате обновления
+            'query_type': 19,
             'cursor': cursor,
             'numperpage': 100,
             'appid': APP_ID,
@@ -181,16 +174,18 @@ def fetch_all_mods():
                     'time_updated': time_updated,
                     'banned': bool(mod.get('banned', False))
                 }
-                all_fetched_mods.append(processed_mod)
+                
+                # Добавляем в список на сохранение только если это полная загрузка, 
+                # либо если мод реально обновился (свежее local_max_time)
+                if is_full_update or local_max_time == 0 or time_updated > local_max_time:
+                    all_fetched_mods.append(processed_mod)
+                    
             except Exception:
                 pass
                 
         loaded += len(publishedfiledetails)
-        print(f"Скачано за сессию: {loaded}")
         
-        # Если это не полная чистка и мы дошли до старых модов — обрываем загрузку
         if not is_full_update and local_max_time > 0 and all_older_than_target:
-            print("Дошли до старых модов! Инкрементальное обновление завершено, прерываем цикл.")
             break
         
         next_cursor = response_data.get('next_cursor')
@@ -198,13 +193,18 @@ def fetch_all_mods():
             break
             
         cursor = next_cursor
-        time.sleep(0.1) # Короткая пауза, так как при инкрементальном обновлении мы качаем быстро
+        time.sleep(0.1)
 
     if all_fetched_mods:
         save_mods_to_db(all_fetched_mods)
-        print(f"Парсинг успешно завершен. База данных {DB_PATH} обновлена.")
+        if is_full_update:
+            print(f"✅ Полная чистка и парсинг завершены! В чистую базу загружено {len(all_fetched_mods)} модов.")
+        elif local_max_time == 0:
+            print(f"✅ Первичный парсинг завершен! В базу загружено {len(all_fetched_mods)} модов.")
+        else:
+            print(f"✅ Инкрементальное обновление завершено! Найдено и обновлено {len(all_fetched_mods)} свежих модов.")
     else:
-        print("Не удалось загрузить ни одного нового мода (или произошла ошибка).")
+        print("✅ Нет новых обновлений. База данных актуальна.")
 
 if __name__ == "__main__":
     init_database()
