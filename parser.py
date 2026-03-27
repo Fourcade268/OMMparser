@@ -10,15 +10,15 @@ import datetime
 # Настройки
 API_KEY = os.environ.get('STEAM_API_KEY')
 DB_PATH = "mods_cache.db"
+MARKER_FILE = "last_full_update.txt"
+TIME_FILE = "update_time.txt"
 APP_ID = 221100  # DayZ
 MAX_RETRIES = 3
 
 def init_database():
-    """Инициализация базы данных для кэширования модов"""
     print("Инициализация базы данных...")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS mods (
             publishedfileid TEXT PRIMARY KEY,
@@ -30,31 +30,64 @@ def init_database():
             banned INTEGER DEFAULT 0
         )
     ''')
-    
     conn.commit()
     conn.close()
     print("База данных готова.")
 
-def get_last_update_time():
-    """Получает Unix-время самого свежего обновления из нашей БД"""
+def check_if_full_update_needed():
+    """Проверяет, нужен ли полный парсинг на этой неделе"""
+    now = datetime.datetime.utcnow()
+    
+    # Если сегодня не воскресенье (6) - полный парсинг точно не нужен
+    if now.weekday() != 6:
+        return False
+        
+    # Получаем текущий год и номер недели (например: 2026, 13)
+    current_year, current_week, _ = now.isocalendar()
+    current_marker = f"{current_year}-W{current_week}"
+    
+    # Читаем метку из файла
+    if os.path.exists(MARKER_FILE):
+        with open(MARKER_FILE, "r", encoding="utf-8") as f:
+            last_marker = f.read().strip()
+            # Если метка совпадает, значит на этой неделе в воскресенье мы уже чистили базу
+            if last_marker == current_marker:
+                return False
+                
+    return True
+
+def save_full_update_marker():
+    """Сохраняет метку о том, что полная чистка на этой неделе завершена"""
+    now = datetime.datetime.utcnow()
+    current_year, current_week, _ = now.isocalendar()
+    current_marker = f"{current_year}-W{current_week}"
+    
     try:
-        if not os.path.exists(DB_PATH):
-            return 0
+        with open(MARKER_FILE, "w", encoding="utf-8") as f:
+            f.write(current_marker)
+        print(f"Метка полной чистки ({current_marker}) успешно сохранена.")
+    except Exception as e:
+        print(f"Ошибка сохранения метки: {e}")
+
+def get_last_update_time():
+    try:
+        if not os.path.exists(DB_PATH): return 0
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT MAX(time_updated) FROM mods")
         result = cursor.fetchone()
         conn.close()
         return result[0] if result and result[0] else 0
-    except Exception as e:
-        print(f"Ошибка чтения локальной БД: {e}")
+    except Exception:
         return 0
 
-def save_mods_to_db(mods_data):
-    """Сохранение новых и обновленных модов и удаление мусора"""
+def save_mods_to_db(mods_data, full_clear=False):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
+    if full_clear:
+        cursor.execute('DELETE FROM mods')
+        
     if mods_data:
         for mod in mods_data:
             try:
@@ -73,61 +106,47 @@ def save_mods_to_db(mods_data):
             except Exception:
                 continue
 
-    # Жесткая зачистка: удаляем все моды с нулевыми датами или без названия,
-    # которые могли застрять в базе при прошлых парсингах
+    # Зачистка "Unknown" и пустых дат
     cursor.execute("DELETE FROM mods WHERE time_created = 0 OR time_updated = 0 OR title = 'Unknown' OR title = ''")
-    
     conn.commit()
     conn.close()
 
 def make_request_with_retry(url, params, retries=MAX_RETRIES):
-    """Выполнение запроса с повторными попытками при ошибках"""
     for attempt in range(retries):
         try:
             response = requests.get(url, params=params, timeout=30)
-            
             if response.status_code != 200:
-                print(f"Ошибка HTTP: {response.status_code}. Попытка {attempt + 1}/{retries}")
                 time.sleep(2)
                 continue
-            
             if not response.text or response.text.strip() == '':
                 time.sleep(2)
                 continue
-            
             return response.json()
-            
-        except Exception as e:
-            print(f"Ошибка запроса: {e}")
+        except Exception:
             time.sleep(2)
             continue
     return None
 
 def fetch_all_mods():
-    """Получение модов из Steam API"""
     if not API_KEY:
         print("ОШИБКА: API ключ не найден!")
         return
 
-    now = datetime.datetime.utcnow()
-    is_full_update = (now.weekday() == 6 and now.hour == 0)
+    # Умная проверка через файл
+    is_full_update = check_if_full_update_needed()
+
+    local_max_time = 0 if is_full_update else get_last_update_time()
+    target_time = local_max_time - 259200 if local_max_time > 0 else 0
+    
+    # 21 - Идеальная сортировка Steam по дате последнего обновления
+    query_type = 21 if not is_full_update else 0
 
     if is_full_update:
-        print("Воскресенье, 00:00 UTC! Выполняем ПОЛНУЮ чистку базы для удаления 'мертвых' модов...")
-        local_max_time = 0
-        target_time = 0
-        conn = sqlite3.connect(DB_PATH)
-        conn.cursor().execute('DELETE FROM mods')
-        conn.commit()
-        conn.close()
+        print("Воскресенье! Выполняем первую за неделю ПОЛНУЮ чистку базы...")
+    elif local_max_time > 0:
+        print(f"Инкрементальное обновление. Качаем измененные после {target_time}...")
     else:
-        local_max_time = get_last_update_time()
-        target_time = local_max_time - 259200 if local_max_time > 0 else 0
-        
-        if local_max_time > 0:
-            print(f"Инкрементальное обновление. Качаем измененные после {target_time}...")
-        else:
-            print("База пуста. Выполняем полную загрузку всех модов...")
+        print("База пуста. Выполняем полную загрузку всех модов...")
 
     all_fetched_mods = []
     cursor = '*'
@@ -138,7 +157,7 @@ def fetch_all_mods():
     while cursor:
         params = {
             'key': API_KEY,
-            'query_type': 21,
+            'query_type': query_type,
             'cursor': cursor,
             'numperpage': 100,
             'appid': APP_ID,
@@ -146,7 +165,6 @@ def fetch_all_mods():
         }
         
         data = make_request_with_retry(url, params)
-        
         if not data or 'response' not in data:
             print("Ошибка получения данных, прерываем загрузку...")
             break
@@ -166,7 +184,7 @@ def fetch_all_mods():
                 time_created = int(mod.get('time_created', 0))
                 title = str(mod.get('title', '')).strip()
                 
-                # ПРОПУСКАЕМ удаленные/скрытые моды (без дат и названий)
+                # Пропускаем удаленные/скрытые моды
                 if time_created == 0 or time_updated == 0 or not title or title == 'Unknown':
                     continue
 
@@ -183,7 +201,7 @@ def fetch_all_mods():
                     'banned': bool(mod.get('banned', False))
                 }
                 
-                if is_full_update or local_max_time == 0 or time_updated > local_max_time:
+                if is_full_update or local_max_time == 0 or time_updated >= target_time:
                     all_fetched_mods.append(processed_mod)
                     
             except Exception:
@@ -201,13 +219,23 @@ def fetch_all_mods():
         cursor = next_cursor
         time.sleep(0.1)
 
-    # Мы вызываем save_mods_to_db даже если all_fetched_mods пустой, 
-    # чтобы отработал запрос DELETE для очистки уже существующих багов
-    save_mods_to_db(all_fetched_mods)
+    save_mods_to_db(all_fetched_mods, full_clear=is_full_update)
+
+    # Если полная загрузка прошла успешно, ставим метку на эту неделю
+    if is_full_update and all_fetched_mods:
+        save_full_update_marker()
+
+    # Создаем текстовый файл со временем обновления для интерфейса
+    try:
+        with open(TIME_FILE, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+        print(f"Файл {TIME_FILE} успешно обновлен.")
+    except Exception as e:
+        print(f"Ошибка создания {TIME_FILE}: {e}")
 
     if all_fetched_mods:
         if is_full_update:
-            print(f"✅ Полная чистка и парсинг завершены! В чистую базу загружено {len(all_fetched_mods)} модов.")
+            print(f"✅ Полная чистка и парсинг завершены! В базу загружено {len(all_fetched_mods)} модов.")
         elif local_max_time == 0:
             print(f"✅ Первичный парсинг завершен! В базу загружено {len(all_fetched_mods)} модов.")
         else:
