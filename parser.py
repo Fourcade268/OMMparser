@@ -9,6 +9,7 @@ import datetime
 
 # Настройки
 API_KEY = os.environ.get('STEAM_API_KEY')
+FORCE_FULL = os.environ.get('FORCE_FULL_UPDATE') == 'true'
 DB_PATH = "mods_cache.db"
 MARKER_FILE = "last_full_update.txt"
 TIME_FILE = "update_time.txt"
@@ -132,8 +133,11 @@ def fetch_all_mods():
         print("ОШИБКА: API ключ не найден!")
         return
 
-    # Умная проверка через файл
-    is_full_update = check_if_full_update_needed()
+    # Умная проверка через файл (для воскресенья)
+    is_scheduled_full = check_if_full_update_needed()
+    
+    # Полное обновление = воскресенье ИЛИ нажата галочка в GitHub
+    is_full_update = is_scheduled_full or FORCE_FULL
 
     local_max_time = 0 if is_full_update else get_last_update_time()
     target_time = local_max_time - 259200 if local_max_time > 0 else 0
