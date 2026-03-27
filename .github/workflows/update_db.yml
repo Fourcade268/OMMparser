@@ -2,7 +2,7 @@ name: Update Mods Database
 
 on:
   schedule:
-    - cron: '0 * * * *' # Запуск каждый час
+    - cron: '17 * * * *' # Запуск каждый час
   workflow_dispatch: # Кнопка для ручного запуска
 
 jobs:
